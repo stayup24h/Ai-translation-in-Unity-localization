@@ -4,19 +4,21 @@ using UnityEditor.Localization;
 using UnityEngine;
 using UnityEngine.Localization.Tables;
 using System.IO;
-using System.Diagnostics;
+using System.Diagnostics; 
 using System.Linq;
-using System.Threading.Tasks; // Task를 사용하기 위해 필요
+using System.Threading.Tasks; 
+using UnityEngine.Localization.Settings; 
+using UnityEditor.Localization.Plugins.CSV; // Csv.Export 및 Csv.ImportInto를 위해 필요
 
 public class LocalizationAutomation : EditorWindow
 {
-    private static string s_googleCloudApiKey = "YOUR_GOOGLE_CLOUD_API_KEY_HERE"; // Google Cloud Translation API 키
-    private static string s_googleCloudProjectId = "YOUR_GOOGLE_CLOUD_PROJECT_ID_HERE"; // Google Cloud 프로젝트 ID
+    private static string s_googleCloudApiKey = "YOUR_GOOGLE_CLOUD_API_KEY_HERE"; 
+    private static string s_googleCloudProjectId = "YOUR_GOOGLE_CLOUD_PROJECT_ID_HERE"; 
 
     private static string s_csvExportPath = "Assets/LocalizationData/ExportedStrings.csv";
     private static string s_pythonScriptPath = "Path/To/Your/translation_script.py";
     private static string s_translatedCsvPath = "Assets/LocalizationData/ExportedStrings_translated.csv";
-    private static string s_pythonExePath = "python";
+    private static string s_pythonExePath = "python"; 
 
     [MenuItem("Localization/Automate Translate CSV")]
     public static void ShowWindow()
@@ -45,82 +47,110 @@ public class LocalizationAutomation : EditorWindow
         }
     }
 
-    private static Task ExportAllStringTablesToCsvAsync() // Task 반환 타입으로 변경
+    private static Task ExportAllStringTablesToCsvAsync()
     {
-        var tcs = new TaskCompletionSource<bool>(); // Task 완료를 제어할 TaskCompletionSource
+        var tcs = new TaskCompletionSource<bool>();
+        
+        StringTableCollection stringTableCollection = null;
 
-        if (LocalizationEditorSettings.ActiveTableCollection == null)
+        string[] tableGuids = AssetDatabase.FindAssets("t:StringTable");
+        if (tableGuids.Length > 0)
         {
-            Debug.LogError("No active String Table Collection found. Please open the Localization Tables window.");
-            tcs.SetResult(false); // Task를 실패로 완료
-            return tcs.Task;
-        }
+            string tablePath = AssetDatabase.GUIDToAssetPath(tableGuids[0]);
+            StringTable firstStringTable = AssetDatabase.LoadAssetAtPath<StringTable>(tablePath);
 
-        Debug.Log($"Exporting all String Tables to CSV: {s_csvExportPath}");
-        EditorUtility.DisplayProgressBar("Localization Automation", "Exporting String Tables...", 0.33f); // 1/3 진행
-
-        var exportOperation = LocalizationEditorSettings.ActiveTableCollection.ExportToFile(
-            LocalizationEditorSettings.ActiveTableCollection.StringTables.ToArray(),
-            s_csvExportPath,
-            CsvColumns.AllTableEntries);
-
-        exportOperation.Completed += (op) =>
-        {
-            if (op.Status == AsyncOperationStatus.Succeeded)
+            if (firstStringTable != null)
             {
-                Debug.Log($"Successfully exported String Tables to: {s_csvExportPath}");
-                AssetDatabase.Refresh();
-                tcs.SetResult(true); // Task를 성공으로 완료
+                stringTableCollection = (StringTableCollection)LocalizationEditorSettings.GetCollectionFromTable(firstStringTable);
             }
             else
             {
-                Debug.LogError($"Failed to export String Tables: {op.OperationException}");
-                tcs.SetResult(false); // Task를 실패로 완료
+                UnityEngine.Debug.LogError("Failed to load the first StringTable found.");
             }
-        };
+
+            if (tableGuids.Length > 1)
+            {
+                UnityEngine.Debug.LogWarning("Multiple StringTables found. Using the collection associated with the first one: " + tablePath + 
+                                             "\nIf you need to specify a different collection, please modify the script.");
+            }
+        }
+
+        if (stringTableCollection == null)
+        {
+            UnityEngine.Debug.LogError("No String Table Collection found (or could not be derived from a StringTable). Please ensure a String Table Collection exists and contains at least one String Table.");
+            tcs.SetResult(false);
+            return tcs.Task;
+        }
+        
+        var stringTables = stringTableCollection.StringTables;
+
+        if (stringTables == null || !stringTables.Any())
+        {
+            UnityEngine.Debug.LogError($"No String Tables found in the '{stringTableCollection.name}' String Table Collection. Please create or load some String Tables.");
+            tcs.SetResult(false);
+            return tcs.Task;
+        }
+
+        UnityEngine.Debug.Log($"Exporting all String Tables to CSV: {s_csvExportPath}");
+        EditorUtility.DisplayProgressBar("Localization Automation", "Exporting String Tables...", 0.33f);
+
+        // --- EXPORT LOGIC (using Csv.Export) ---
+        try
+        {
+            string directory = Path.GetDirectoryName(s_csvExportPath);
+            if (!Directory.Exists(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            using (var textWriter = new StreamWriter(s_csvExportPath, false, System.Text.Encoding.UTF8))
+            {
+                Csv.Export(textWriter, stringTableCollection); 
+            }
+
+            UnityEngine.Debug.Log($"Successfully exported String Tables to: {s_csvExportPath}");
+            AssetDatabase.Refresh();
+            tcs.SetResult(true);
+        }
+        catch (System.Exception e)
+        {
+            UnityEngine.Debug.LogError($"Failed to export String Tables: {e.Message}");
+            tcs.SetResult(false);
+        }
+        // --- END EXPORT LOGIC ---
 
         return tcs.Task;
     }
 
-    private static bool RunPythonScript() // bool 반환 타입으로 변경 (성공 여부)
+    private static bool RunPythonScript() 
     {
         if (!File.Exists(s_pythonScriptPath))
         {
-            Debug.LogError($"Python script not found at: {s_pythonScriptPath}");
+            UnityEngine.Debug.LogError($"Python script not found at: {s_pythonScriptPath}");
             return false;
         }
         if (string.IsNullOrEmpty(s_googleCloudApiKey) || s_googleCloudApiKey == "YOUR_GOOGLE_CLOUD_API_KEY_HERE")
         {
-            Debug.LogError("Please enter your Google Cloud API Key in the editor window.");
+            UnityEngine.Debug.LogError("Please enter your Google Cloud API Key in the editor window.");
             return false;
         }
         if (string.IsNullOrEmpty(s_googleCloudProjectId) || s_googleCloudProjectId == "YOUR_GOOGLE_CLOUD_PROJECT_ID_HERE")
         {
-            Debug.LogError("Please enter your Google Cloud Project ID in the editor window.");
+            UnityEngine.Debug.LogError("Please enter your Google Cloud Project ID in the editor window.");
             return false;
         }
 
-        Debug.Log($"Running Python script: {s_pythonScriptPath}");
-        EditorUtility.DisplayProgressBar("Localization Automation", "Running Python Translation Script...", 0.66f); // 2/3 진행
+        UnityEngine.Debug.Log($"Running Python script: {s_pythonScriptPath}");
+        EditorUtility.DisplayProgressBar("Localization Automation", "Running Python Translation Script...", 0.66f);
 
         ProcessStartInfo start = new ProcessStartInfo();
         start.FileName = s_pythonExePath;
-        // API 키와 프로젝트 ID를 인자로 추가 (Python 스크립트 수정 필요: 인자 4개 받도록)
-        // 현재 Python 스크립트의 인자 개수 3개를 유지하려면, Python 스크립트 내에서 프로젝트 ID를 하드코딩해야 합니다.
-        // 하지만 여기서는 Unity에서 모두 전달하는 방식으로 가이드합니다.
-        // Python 스크립트의 main 함수 부분을 다음과 같이 수정해야 합니다:
-        // if len(sys.argv) != 5:
-        //     print("Python 오류: 올바른 사용법: python translation_script.py <api_key> <project_id> <input_csv_path> <output_csv_path>")
-        //     sys.exit(1)
-        // API_KEY = sys.argv[1]
-        // GOOGLE_CLOUD_PROJECT_ID = sys.argv[2]
-        // input_csv_file = sys.argv[3]
-        // output_csv_file = sys.argv[4]
         start.Arguments = $"{s_pythonScriptPath} \"{s_googleCloudApiKey}\" \"{s_googleCloudProjectId}\" \"{s_csvExportPath}\" \"{s_translatedCsvPath}\"";
 
         start.UseShellExecute = false;
         start.RedirectStandardOutput = true;
         start.RedirectStandardError = true;
+        start.CreateNoWindow = true; 
 
         try
         {
@@ -130,104 +160,117 @@ public class LocalizationAutomation : EditorWindow
                 string stderr = process.StandardError.ReadToEnd();
                 process.WaitForExit();
 
-                if (!string.IsNullOrEmpty(stdout)) Debug.Log($"Python Script Output:\n{stdout}");
-                if (!string.IsNullOrEmpty(stderr)) Debug.LogError($"Python Script Error:\n{stderr}");
+                if (!string.IsNullOrEmpty(stdout)) UnityEngine.Debug.Log($"Python Script Output:\n{stdout}");
+                if (!string.IsNullOrEmpty(stderr)) UnityEngine.Debug.LogError($"Python Script Error:\n{stderr}");
 
                 if (process.ExitCode == 0)
                 {
-                    Debug.Log("Python script executed successfully.");
+                    UnityEngine.Debug.Log("Python script executed successfully.");
                     AssetDatabase.Refresh();
                     return true;
                 }
                 else
                 {
-                    Debug.LogError($"Python script exited with error code: {process.ExitCode}");
+                    UnityEngine.Debug.LogError($"Python script exited with error code: {process.ExitCode}");
                     return false;
                 }
             }
         }
         catch (System.Exception e)
         {
-            Debug.LogError($"Error running Python script: {e.Message}");
+            UnityEngine.Debug.LogError($"Error running Python script: {e.Message}");
             return false;
         }
     }
 
-    private static Task ImportTranslatedCsvToStringTablesAsync() // Task 반환 타입으로 변경
+    private static Task ImportTranslatedCsvToStringTablesAsync()
     {
-        var tcs = new TaskCompletionSource<bool>(); // Task 완료를 제어할 TaskCompletionSource
+        var tcs = new TaskCompletionSource<bool>();
 
-        if (LocalizationEditorSettings.ActiveTableCollection == null)
+        StringTableCollection currentTableCollection = null;
+        
+        string[] tableGuids = AssetDatabase.FindAssets("t:StringTable");
+        if (tableGuids.Length > 0)
         {
-            Debug.LogError("No active String Table Collection found. Please open the Localization Tables window.");
+            string tablePath = AssetDatabase.GUIDToAssetPath(tableGuids[0]);
+            StringTable firstStringTable = AssetDatabase.LoadAssetAtPath<StringTable>(tablePath);
+            if (firstStringTable != null)
+            {
+                currentTableCollection = (StringTableCollection)LocalizationEditorSettings.GetCollectionFromTable(firstStringTable);
+            }
+        }
+
+        if (currentTableCollection == null)
+        {
+            UnityEngine.Debug.LogError("No String Table Collection found (or could not be derived from a StringTable) for import. Please ensure a String Table Collection exists and contains at least one String Table.");
             tcs.SetResult(false);
             return tcs.Task;
         }
 
         if (!File.Exists(s_translatedCsvPath))
         {
-            Debug.LogError($"Translated CSV file not found at: {s_translatedCsvPath}");
+            UnityEngine.Debug.LogError($"Translated CSV file not found at: {s_translatedCsvPath}");
             tcs.SetResult(false);
             return tcs.Task;
         }
 
-        Debug.Log($"Importing translated CSV: {s_translatedCsvPath} into String Tables.");
-        EditorUtility.DisplayProgressBar("Localization Automation", "Importing Translated CSV...", 1.0f); // 마지막 단계
+        UnityEngine.Debug.Log($"Importing translated CSV: {s_translatedCsvPath} into String Tables.");
+        EditorUtility.DisplayProgressBar("Localization Automation", "Importing Translated CSV...", 1.0f);
 
-        var importOperation = LocalizationEditorSettings.ActiveTableCollection.ImportFromPath(s_translatedCsvPath);
-
-        importOperation.Completed += (op) =>
+        // --- IMPORT LOGIC (using Csv.ImportInto) ---
+        try
         {
-            if (op.Status == AsyncOperationStatus.Succeeded)
+            using (var textReader = new StreamReader(s_translatedCsvPath, System.Text.Encoding.UTF8))
             {
-                Debug.Log($"Successfully imported translated CSV to String Tables.");
-                AssetDatabase.SaveAssets();
-                AssetDatabase.Refresh();
-                tcs.SetResult(true);
+                // Csv.Import 대신 Csv.ImportInto 사용
+                Csv.ImportInto(textReader, currentTableCollection); 
             }
-            else
-            {
-                Debug.LogError($"Failed to import translated CSV: {op.OperationException}");
-                tcs.SetResult(false);
-            }
-        };
+
+            UnityEngine.Debug.Log($"Successfully imported translated CSV to String Tables.");
+            AssetDatabase.SaveAssets(); 
+            AssetDatabase.Refresh();    
+            tcs.SetResult(true);
+        }
+        catch (System.Exception e)
+        {
+            UnityEngine.Debug.LogError($"Failed to import translated CSV: {e.Message}");
+            tcs.SetResult(false);
+        }
+        // --- END IMPORT LOGIC ---
 
         return tcs.Task;
     }
 
-    private async static void AutomateAll() // async로 변경하여 await 사용 가능
+    private async static void AutomateAll()
     {
-        EditorUtility.DisplayProgressBar("Localization Automation", "Starting Automation...", 0.0f); // 시작
+        EditorUtility.DisplayProgressBar("Localization Automation", "Starting Automation...", 0.0f);
 
         try
         {
-            // 1. Export
-            Debug.Log("Automating all localization steps: Step 1/3 - Exporting String Tables...");
+            UnityEngine.Debug.Log("Automating all localization steps: Step 1/3 - Exporting String Tables...");
             await ExportAllStringTablesToCsvAsync();
 
-            // 2. Translate (Python 스크립트는 동기적으로 실행되므로 Task.Run으로 감싸서 비동기처럼 처리)
-            Debug.Log("Automating all localization steps: Step 2/3 - Running Python Translation Script...");
-            bool pythonSuccess = await Task.Run(() => RunPythonScript()); // UI 스레드를 막지 않도록 Task.Run 사용
+            UnityEngine.Debug.Log("Automating all localization steps: Step 2/3 - Running Python Translation Script...");
+            bool pythonSuccess = await Task.Run(() => RunPythonScript());
 
             if (!pythonSuccess)
             {
-                Debug.LogError("Python script failed. Aborting automation.");
-                return; // Python 스크립트 실패 시 중단
+                UnityEngine.Debug.LogError("Python script failed. Aborting automation.");
+                return;
             }
 
-            // 3. Import
-            Debug.Log("Automating all localization steps: Step 3/3 - Importing Translated CSV...");
+            UnityEngine.Debug.Log("Automating all localization steps: Step 3/3 - Importing Translated CSV...");
             await ImportTranslatedCsvToStringTablesAsync();
 
-            Debug.Log("Automation completed successfully!");
+            UnityEngine.Debug.Log("Automation completed successfully!");
         }
         catch (System.Exception e)
         {
-            Debug.LogError($"Automation failed: {e.Message}");
+            UnityEngine.Debug.LogError($"Automation failed: {e.Message}");
         }
         finally
         {
-            EditorUtility.ClearProgressBar(); // 작업 완료 또는 오류 시 프로그레스 바 숨기기
+            EditorUtility.ClearProgressBar();
         }
     }
 }
